@@ -263,17 +263,15 @@ def format_art_with_stock(art, links=None, margin=DEFAULT_MARGIN):
 
 # ---------- Клавиатура для выбора наценки ----------
 def get_margin_keyboard():
-    # Создаём кнопки в два ряда
     buttons = []
     row = []
     for i, margin in enumerate(MARGIN_OPTIONS, 1):
         row.append(KeyboardButton(f"{margin}%"))
-        if i % 4 == 0:  # по 4 кнопки в ряду
+        if i % 4 == 0:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    # Добавляем кнопку для показа текущей наценки
     buttons.append([KeyboardButton("Текущая наценка")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -284,7 +282,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ к боту запрещён.")
         return
 
-    # Устанавливаем наценку по умолчанию
     context.user_data['margin'] = DEFAULT_MARGIN
 
     emoji_id = "5247029251940586192"
@@ -298,11 +295,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Для найденных артикулов показывается наличие на складе.\n"
         "Используйте кнопки ниже для выбора наценки."
     )
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode='HTML',
-        reply_markup=get_margin_keyboard()
-    )
+    await update.message.reply_text(welcome_text, parse_mode='HTML', reply_markup=get_margin_keyboard())
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -329,10 +322,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📊 Текущая наценка: {current}%", reply_markup=get_margin_keyboard())
         return
 
-    # Получаем текущую наценку из user_data (по умолчанию DEFAULT_MARGIN)
     margin = context.user_data.get('margin', DEFAULT_MARGIN)
 
-    # Основная логика поиска (как в четвёртом боте)
     user_input_norm = normalize(user_input)
     input_len = len(user_input_norm)
 
@@ -409,7 +400,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_art:
                 inventory_arts.add(orig_art)
 
-    # Формирование ответа
+    # Формирование строк ответа
     answer_lines = []
 
     for art in sorted(main_arts):
@@ -427,7 +418,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer_lines.append(format_art_with_stock(art, margin=margin))
 
     for art in sorted(flp_arts):
-        # Убираем "• " и добавляем пометку
         answer_lines.append(f"• FLP артикул: " + format_art_with_stock(art, margin=margin)[2:])
 
     for num in sorted(flp_nums):
@@ -438,18 +428,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if art not in shown_arts:
             answer_lines.append(format_art_with_stock(art, margin=margin))
 
+    # Если нет результатов
     if not answer_lines:
-        answer_lines.append(f"❌ Ничего не найдено по запросу `{user_input}`.")
+        await update.message.reply_text(
+            f"❌ Ничего не найдено по запросу `{user_input}`.",
+            reply_markup=get_margin_keyboard()
+        )
+        return
 
-    # Отправляем ответ с клавиатурой (чтобы кнопки оставались)
-    await update.message.reply_text("\n".join(answer_lines), reply_markup=get_margin_keyboard())
+    # Разбиваем на части, если сообщение слишком длинное
+    MAX_LEN = 4000  # оставим запас
+    full_text = "\n".join(answer_lines)
+
+    # Простая разбивка по строкам
+    parts = []
+    current = ""
+    for line in answer_lines:
+        # если одна строка уже длиннее лимита – отправляем отдельно (редко)
+        if len(line) > MAX_LEN:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.append(line)
+            continue
+        # пробуем добавить
+        if current:
+            candidate = current + "\n" + line
+        else:
+            candidate = line
+        if len(candidate) <= MAX_LEN:
+            current = candidate
+        else:
+            parts.append(current)
+            current = line
+    if current:
+        parts.append(current)
+
+    # Отправляем все части, кроме последней, без клавиатуры
+    for part in parts[:-1]:
+        await update.message.reply_text(part)
+    # Последнюю часть отправляем с клавиатурой
+    if parts:
+        await update.message.reply_text(parts[-1], reply_markup=get_margin_keyboard())
 
 def main():
     app = Application.builder().token(API_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) с регулировкой наценки запущен...")
+    print("🚀 Четвёртый бот (поиск + наличие на складе) с регулировкой наценки и защитой от длинных сообщений запущен...")
     if ALLOWED_IDS_STR:
         print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
     else:
