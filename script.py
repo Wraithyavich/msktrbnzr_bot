@@ -10,6 +10,23 @@ API_TOKEN = os.environ.get('API_TOKEN')
 if API_TOKEN is None:
     raise ValueError("❌ Переменная окружения API_TOKEN не задана!")
 
+# ---------- Список разрешенных пользователей ----------
+ALLOWED_IDS_STR = os.environ.get('ALLOWED_IDS', '')
+ALLOWED_IDS = set()
+if ALLOWED_IDS_STR:
+    try:
+        ALLOWED_IDS = set(int(id.strip()) for id in ALLOWED_IDS_STR.split(',') if id.strip())
+        print(f"✅ Загружено {len(ALLOWED_IDS)} разрешенных пользователей")
+    except ValueError:
+        print("⚠️ Ошибка парсинга ALLOWED_IDS")
+
+# ---------- Проверка доступа ----------
+def is_allowed(user_id):
+    # Если список не задан, доступ разрешён всем
+    if not ALLOWED_IDS_STR:
+        return True
+    return user_id in ALLOWED_IDS
+
 # ---------- Константы ----------
 MIN_SEARCH_LENGTH = 4
 DATA_FILE = 'data.csv'
@@ -196,6 +213,11 @@ def format_art_with_stock(art, links=None):
 
 # ---------- Обработчики ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("⛔ Доступ к боту запрещён.")
+        return
+
     emoji_id = "5247029251940586192"
     welcome_text = (
         f"<tg-emoji emoji-id=\"{emoji_id}\">😊</tg-emoji> Бот поиска с проверкой наличия!\n"
@@ -209,6 +231,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode='HTML')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("⛔ Доступ к боту запрещён.")
+        return
+
     user_input = clean_text(update.message.text)
     if not user_input:
         return
@@ -324,7 +351,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) запущен...")
+    print("🚀 Четвёртый бот (поиск + наличие на складе) с контролем доступа запущен...")
+    if ALLOWED_IDS_STR:
+        print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
+    else:
+        print("🔓 Доступ разрешён для всех (ALLOWED_IDS не задана).")
     app.run_polling()
 
 if __name__ == '__main__':
