@@ -2,7 +2,7 @@ import csv
 import os
 import re
 from collections import defaultdict
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------- Получение токена из переменной окружения ----------
@@ -33,6 +33,10 @@ JRONE_FILE = 'jronecross.csv'
 OEM_FILE = 'oemcross.csv'
 FLP_FILE = 'flp.csv'
 INVENTORY_FILE = 'inventory.csv'
+
+# Доступные проценты наценки
+MARGIN_OPTIONS = [20, 25, 30, 35, 40, 45, 50]
+DEFAULT_MARGIN = 50
 
 # ---------- Очистка текста ----------
 def clean_text(s):
@@ -65,6 +69,36 @@ def normalize(s):
 
 def is_11_digit_number(s):
     return re.fullmatch(r'\d{11}', s) is not None
+
+# ---------- Функции для работы с ценами ----------
+def parse_price(price_str):
+    """Преобразует строку с ценой (например '6 950,00') в число float."""
+    if not price_str:
+        return 0.0
+    # Удаляем пробелы и заменяем запятую на точку
+    cleaned = price_str.replace(' ', '').replace(',', '.')
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+def format_price(price):
+    """Форматирует число в строку с двумя знаками после запятой и пробелом как разделителем тысяч."""
+    # Округляем до двух знаков
+    rounded = round(price, 2)
+    # Форматируем с пробелами между тысячами
+    s = f"{rounded:.2f}".replace('.', ',')
+    # Добавляем пробелы как разделители тысяч (очень упрощённо)
+    parts = s.split(',')
+    int_part = parts[0]
+    frac_part = parts[1] if len(parts) > 1 else '00'
+    # Вставляем пробелы каждые 3 цифры справа налево
+    int_part_with_spaces = ''
+    for i, digit in enumerate(reversed(int_part)):
+        if i > 0 and i % 3 == 0:
+            int_part_with_spaces = ' ' + int_part_with_spaces
+        int_part_with_spaces = digit + int_part_with_spaces
+    return f"{int_part_with_spaces},{frac_part}"
 
 # ---------- Загрузка основной базы (data.csv) ----------
 dict_by_col1 = defaultdict(list)   # Turbo P/N -> список E&E P/N
@@ -154,7 +188,7 @@ except Exception as e:
 print(f"✅ FLP-база: {len(flp_norm_to_art)} уникальных FLP-номеров, {len(art_norm_to_flp)} уникальных артикулов.")
 
 # ---------- Загрузка складской базы (inventory.csv) ----------
-inventory = {}               # артикул -> [доп_артикул, количество, цена, скидка]
+inventory = {}               # артикул -> [доп_артикул, количество, цена_строка, скидка]
 stock_norm_to_art = {}       # нормализованный артикул -> оригинальный артикул (для быстрого поиска)
 
 try:
@@ -174,17 +208,14 @@ try:
                     qty = int(clean_text(row[2]))
                 except ValueError:
                     qty = 0
-                price = clean_text(row[3])
+                price_str = clean_text(row[3])
                 discount = True
                 if len(row) >= 5 and clean_text(row[4]) == "1":
                     discount = False
                 if art:
-                    inventory[art] = [dop, qty, price, discount]
+                    inventory[art] = [dop, qty, price_str, discount]
                     stock_norm_to_art[normalize(art)] = art
     print(f"✅ Складская база: {len(inventory)} записей.")
-    # Выведем несколько примеров для отладки
-    print("Примеры артикулов из inventory:", list(inventory.keys())[:5])
-    print("Примеры нормализованных ключей:", list(stock_norm_to_art.keys())[:5])
 except FileNotFoundError:
     print("⚠️ Файл inventory.csv не найден, информация о наличии будет недоступна.")
 except Exception as e:
@@ -206,12 +237,23 @@ def partial_search_main(search_norm):
     return results
 
 # ---------- Вспомогательная функция для форматирования артикула со складской информацией ----------
-def format_art_with_stock(art, links=None):
+def format_art_with_stock(art, links=None, margin=DEFAULT_MARGIN):
     stock = inventory.get(art)
     if stock:
-        _, qty, price, discount = stock
+        _, qty, price_str, discount = stock
+        # Парсим исходную цену (с наценкой 50%)
+        original_price = parse_price(price_str)
+        if original_price != 0:
+            # Вычисляем базовую цену (без наценки)
+            base_price = original_price / 1.5
+            # Применяем текущую наценку
+            final_price = base_price * (1 + margin / 100.0)
+            # Форматируем
+            price_display = format_price(final_price)
+        else:
+            price_display = price_str  # оставляем как есть, если не удалось распарсить
         discount_str = " (скидка)" if discount else ""
-        stock_part = f" – наличие: {qty} ед., цена: {price}{discount_str}"
+        stock_part = f" – наличие: {qty} ед., цена: {price_display}{discount_str}"
     else:
         stock_part = " – нет на складе (цена неизвестна)"
     if links:
@@ -219,12 +261,31 @@ def format_art_with_stock(art, links=None):
     else:
         return f"• {art}{stock_part}"
 
+# ---------- Клавиатура для выбора наценки ----------
+def get_margin_keyboard():
+    # Создаём кнопки в два ряда
+    buttons = []
+    row = []
+    for i, margin in enumerate(MARGIN_OPTIONS, 1):
+        row.append(KeyboardButton(f"{margin}%"))
+        if i % 4 == 0:  # по 4 кнопки в ряду
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    # Добавляем кнопку для показа текущей наценки
+    buttons.append([KeyboardButton("Текущая наценка")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
 # ---------- Обработчики ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         await update.message.reply_text("⛔ Доступ к боту запрещён.")
         return
+
+    # Устанавливаем наценку по умолчанию
+    context.user_data['margin'] = DEFAULT_MARGIN
 
     emoji_id = "5247029251940586192"
     welcome_text = (
@@ -234,9 +295,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔍 Можно искать по части номера (минимум {MIN_SEARCH_LENGTH} символа).\n"
         "Дефисы можно не ставить – бот поймёт.\n"
         "Также бот понимает русские буквы, похожие на латинские.\n"
-        "Для найденных артикулов показывается наличие на складе."
+        "Для найденных артикулов показывается наличие на складе.\n"
+        "Используйте кнопки ниже для выбора наценки."
     )
-    await update.message.reply_text(welcome_text, parse_mode='HTML')
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode='HTML',
+        reply_markup=get_margin_keyboard()
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -248,20 +314,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_input:
         return
 
+    # Обработка кнопок выбора наценки
+    if user_input.endswith('%') and user_input[:-1].isdigit():
+        margin = int(user_input[:-1])
+        if margin in MARGIN_OPTIONS:
+            context.user_data['margin'] = margin
+            await update.message.reply_text(f"✅ Установлена наценка {margin}%", reply_markup=get_margin_keyboard())
+            return
+        else:
+            await update.message.reply_text("❌ Неверное значение. Используйте кнопки.", reply_markup=get_margin_keyboard())
+            return
+    elif user_input == "Текущая наценка":
+        current = context.user_data.get('margin', DEFAULT_MARGIN)
+        await update.message.reply_text(f"📊 Текущая наценка: {current}%", reply_markup=get_margin_keyboard())
+        return
+
+    # Получаем текущую наценку из user_data (по умолчанию DEFAULT_MARGIN)
+    margin = context.user_data.get('margin', DEFAULT_MARGIN)
+
+    # Основная логика поиска (как в четвёртом боте)
     user_input_norm = normalize(user_input)
     input_len = len(user_input_norm)
 
-    # Множества артикулов из разных источников
-    main_arts = set()          # из основной базы data.csv (просто артикулы)
-    jrone_arts = set()         # артикулы из JRN
-    oem_arts = set()           # артикулы из OEM
-    flp_arts = set()           # артикулы из FLP (найденные по FLP номеру)
-    flp_nums = set()           # FLP номера (найденные по артикулу)
-    inventory_arts = set()     # артикулы, найденные в inventory
+    main_arts = set()
+    jrone_arts = set()
+    oem_arts = set()
+    flp_arts = set()
+    flp_nums = set()
+    inventory_arts = set()
 
-    # ------------------ ПОИСК В ОСНОВНОЙ БАЗЕ (data.csv) ------------------
+    # Поиск в основной базе
     if input_len < MIN_SEARCH_LENGTH:
-        # Точный поиск
         if user_input_norm in col2_norm_to_original:
             for key in col2_norm_to_original[user_input_norm]:
                 for val in dict_by_col2[key]:
@@ -271,10 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for val in dict_by_col1[key]:
                     main_arts.add(val)
     else:
-        # Частичный поиск
         main_arts = partial_search_main(user_input_norm)
-
-        # Если ничего не найдено, пробуем заменить среднюю часть на 970 для 11-значных номеров
         if not main_arts and is_11_digit_number(user_input_norm):
             first4 = user_input_norm[:4]
             middle3 = user_input_norm[4:7]
@@ -283,7 +363,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_norm = first4 + '970' + last4
                 main_arts = partial_search_main(new_norm)
 
-    # ------------------ ПОИСК В JRN ------------------
+    # Поиск в JRN
     if input_len < MIN_SEARCH_LENGTH:
         if user_input_norm in jrone_norm_to_art:
             jrone_arts = jrone_norm_to_art[user_input_norm]
@@ -292,7 +372,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 jrone_arts.update(arts)
 
-    # ------------------ ПОИСК В OEM ------------------
+    # Поиск в OEM
     if input_len < MIN_SEARCH_LENGTH:
         if user_input_norm in oem_norm_to_art:
             oem_arts = oem_norm_to_art[user_input_norm]
@@ -301,8 +381,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 oem_arts.update(arts)
 
-    # ------------------ ПОИСК В FLP (двунаправленный) ------------------
-    # Ищем как FLP номер -> артикулы
+    # Поиск в FLP (двунаправленный)
     if input_len < MIN_SEARCH_LENGTH:
         if user_input_norm in flp_norm_to_art:
             flp_arts = flp_norm_to_art[user_input_norm]
@@ -311,7 +390,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 flp_arts.update(arts)
 
-    # Ищем как артикул -> FLP номера
     if input_len < MIN_SEARCH_LENGTH:
         if user_input_norm in art_norm_to_flp:
             flp_nums = art_norm_to_flp[user_input_norm]
@@ -320,65 +398,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 flp_nums.update(nums)
 
-    # ------------------ ПОИСК В INVENTORY ------------------
+    # Поиск в inventory
     if input_len < MIN_SEARCH_LENGTH:
-        # Точный поиск: сначала по нормализованному ключу, затем по оригинальному вводу
         if user_input_norm in stock_norm_to_art:
             inventory_arts.add(stock_norm_to_art[user_input_norm])
-        elif user_input in inventory:   # поиск по оригинальному (очищенному) вводу
+        elif user_input in inventory:
             inventory_arts.add(user_input)
     else:
-        # Частичный поиск по нормализованным ключам
         for norm_art, orig_art in stock_norm_to_art.items():
             if user_input_norm in norm_art:
                 inventory_arts.add(orig_art)
 
-    # ------------------ ФОРМИРОВАНИЕ ОТВЕТА ------------------
+    # Формирование ответа
     answer_lines = []
 
-    # Основная база
     for art in sorted(main_arts):
-        answer_lines.append(format_art_with_stock(art))
+        answer_lines.append(format_art_with_stock(art, margin=margin))
 
-    # JRN (артикулы со связями)
     for art in sorted(jrone_arts):
         links = set()
         if art in dict_by_col1:
             links.update(dict_by_col1[art])
         if art in dict_by_col2:
             links.update(dict_by_col2[art])
-        answer_lines.append(format_art_with_stock(art, links=sorted(links)))
+        answer_lines.append(format_art_with_stock(art, links=sorted(links), margin=margin))
 
-    # OEM
     for art in sorted(oem_arts):
-        answer_lines.append(format_art_with_stock(art))
+        answer_lines.append(format_art_with_stock(art, margin=margin))
 
-    # FLP артикулы (найденные по FLP номеру)
     for art in sorted(flp_arts):
-        answer_lines.append(f"• FLP артикул: " + format_art_with_stock(art)[2:])  # убираем "• " и добавляем пометку
+        # Убираем "• " и добавляем пометку
+        answer_lines.append(f"• FLP артикул: " + format_art_with_stock(art, margin=margin)[2:])
 
-    # FLP номера (найденные по артикулу)
     for num in sorted(flp_nums):
         answer_lines.append(f"• FLP номер: {num}")
 
-    # Inventory артикулы, которые не были показаны выше
     shown_arts = set(main_arts) | set(jrone_arts) | set(oem_arts) | set(flp_arts)
     for art in sorted(inventory_arts):
         if art not in shown_arts:
-            answer_lines.append(format_art_with_stock(art))
+            answer_lines.append(format_art_with_stock(art, margin=margin))
 
-    # Если ничего не найдено
     if not answer_lines:
         answer_lines.append(f"❌ Ничего не найдено по запросу `{user_input}`.")
 
-    await update.message.reply_text("\n".join(answer_lines))
+    # Отправляем ответ с клавиатурой (чтобы кнопки оставались)
+    await update.message.reply_text("\n".join(answer_lines), reply_markup=get_margin_keyboard())
 
 def main():
     app = Application.builder().token(API_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) с улучшенным поиском по inventory запущен...")
+    print("🚀 Четвёртый бот (поиск + наличие на складе) с регулировкой наценки запущен...")
     if ALLOWED_IDS_STR:
         print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
     else:
