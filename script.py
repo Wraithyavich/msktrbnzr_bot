@@ -156,11 +156,17 @@ print(f"✅ FLP-база: {len(flp_norm_to_art)} уникальных FLP-ном
 
 # ---------- Загрузка складской базы (inventory.csv) ----------
 inventory = {}               # артикул -> [доп_артикул, количество, цена, скидка]
-stock_norm_to_art = {}       # нормализованный артикул -> оригинальный артикул (точное совпадение)
+stock_norm_to_art = {}       # нормализованный артикул -> оригинальный артикул (для быстрого поиска)
 
 try:
     with open(INVENTORY_FILE, mode='r', encoding='utf-8-sig') as file:
-        reader = csv.reader(file, delimiter=';')
+        # Попробуем автоматически определить разделитель
+        sample = file.read(1024)
+        file.seek(0)
+        sniffer = csv.Sniffer()
+        delimiter = sniffer.sniff(sample).delimiter
+        print(f"🔍 Определён разделитель для inventory.csv: '{delimiter}'")
+        reader = csv.reader(file, delimiter=delimiter)
         for row in reader:
             if len(row) >= 4:
                 art = clean_text(row[0])
@@ -177,6 +183,9 @@ try:
                     inventory[art] = [dop, qty, price, discount]
                     stock_norm_to_art[normalize(art)] = art
     print(f"✅ Складская база: {len(inventory)} записей.")
+    # Выведем несколько примеров для отладки
+    print("Примеры артикулов из inventory:", list(inventory.keys())[:5])
+    print("Примеры нормализованных ключей:", list(stock_norm_to_art.keys())[:5])
 except FileNotFoundError:
     print("⚠️ Файл inventory.csv не найден, информация о наличии будет недоступна.")
 except Exception as e:
@@ -249,7 +258,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     oem_arts = set()           # артикулы из OEM
     flp_arts = set()           # артикулы из FLP (найденные по FLP номеру)
     flp_nums = set()           # FLP номера (найденные по артикулу)
-    inventory_arts = set()     # артикулы, найденные в inventory (по артикулу)
+    inventory_arts = set()     # артикулы, найденные в inventory
 
     # ------------------ ПОИСК В ОСНОВНОЙ БАЗЕ (data.csv) ------------------
     if input_len < MIN_SEARCH_LENGTH:
@@ -312,13 +321,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 flp_nums.update(nums)
 
-    # ------------------ ПОИСК В INVENTORY (по артикулу) ------------------
+    # ------------------ ПОИСК В INVENTORY ------------------
     if input_len < MIN_SEARCH_LENGTH:
-        # Точный поиск
+        # Точный поиск: сначала по нормализованному ключу, затем по оригинальному вводу
         if user_input_norm in stock_norm_to_art:
             inventory_arts.add(stock_norm_to_art[user_input_norm])
+        elif user_input in inventory:   # поиск по оригинальному (очищенному) вводу
+            inventory_arts.add(user_input)
     else:
-        # Частичный поиск
+        # Частичный поиск по нормализованным ключам
         for norm_art, orig_art in stock_norm_to_art.items():
             if user_input_norm in norm_art:
                 inventory_arts.add(orig_art)
@@ -332,7 +343,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # JRN (артикулы со связями)
     for art in sorted(jrone_arts):
-        # Найдём связи для этого артикула в основной базе
         links = set()
         if art in dict_by_col1:
             links.update(dict_by_col1[art])
@@ -348,12 +358,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for art in sorted(flp_arts):
         answer_lines.append(f"• FLP артикул: " + format_art_with_stock(art)[2:])  # убираем "• " и добавляем пометку
 
-    # FLP номера (найденные по артикулу) – без складской информации
+    # FLP номера (найденные по артикулу)
     for num in sorted(flp_nums):
         answer_lines.append(f"• FLP номер: {num}")
 
     # Inventory артикулы, которые не были показаны выше
-    # Соберём все уже показанные артикулы
     shown_arts = set(main_arts) | set(jrone_arts) | set(oem_arts) | set(flp_arts)
     for art in sorted(inventory_arts):
         if art not in shown_arts:
@@ -370,7 +379,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) с двунаправленным поиском по inventory запущен...")
+    print("🚀 Четвёртый бот (поиск + наличие на складе) с улучшенным поиском по inventory запущен...")
     if ALLOWED_IDS_STR:
         print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
     else:
