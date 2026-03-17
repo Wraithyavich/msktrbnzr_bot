@@ -205,7 +205,7 @@ def format_art_with_stock(art, links=None):
         discount_str = " (скидка)" if discount else ""
         stock_part = f" – наличие: {qty} ед., цена: {price}{discount_str}"
     else:
-        stock_part = " – нет на складе"
+        stock_part = " – нет на складе (цена неизвестна)"
     if links:
         return f"• {art}{stock_part} → {', '.join(links)}"
     else:
