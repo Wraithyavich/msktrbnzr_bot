@@ -1,3 +1,4 @@
+```python
 import csv
 import os
 import re
@@ -22,7 +23,6 @@ if ALLOWED_IDS_STR:
 
 # ---------- Проверка доступа ----------
 def is_allowed(user_id):
-    # Если список не задан, доступ разрешён всем
     if not ALLOWED_IDS_STR:
         return True
     return user_id in ALLOWED_IDS
@@ -33,7 +33,7 @@ DATA_FILE = 'data.csv'
 JRONE_FILE = 'jronecross.csv'
 OEM_FILE = 'oemcross.csv'
 FLP_FILE = 'flp.csv'
-INVENTORY_FILE = 'inventory.csv'   # файл складского учёта
+INVENTORY_FILE = 'inventory.csv'
 
 # ---------- Очистка текста ----------
 def clean_text(s):
@@ -156,7 +156,7 @@ print(f"✅ FLP-база: {len(flp_norm_to_art)} уникальных FLP-ном
 
 # ---------- Загрузка складской базы (inventory.csv) ----------
 inventory = {}               # артикул -> [доп_артикул, количество, цена, скидка]
-stock_norm_to_art = {}       # нормализованный артикул -> оригинальный артикул (для быстрого поиска)
+stock_norm_to_art = {}       # нормализованный артикул -> оригинальный артикул (точное совпадение)
 
 try:
     with open(INVENTORY_FILE, mode='r', encoding='utf-8-sig') as file:
@@ -249,6 +249,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     oem_arts = set()           # артикулы из OEM
     flp_arts = set()           # артикулы из FLP (найденные по FLP номеру)
     flp_nums = set()           # FLP номера (найденные по артикулу)
+    inventory_arts = set()     # артикулы, найденные в inventory (по артикулу)
 
     # ------------------ ПОИСК В ОСНОВНОЙ БАЗЕ (data.csv) ------------------
     if input_len < MIN_SEARCH_LENGTH:
@@ -311,6 +312,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 flp_nums.update(nums)
 
+    # ------------------ ПОИСК В INVENTORY (по артикулу) ------------------
+    if input_len < MIN_SEARCH_LENGTH:
+        # Точный поиск
+        if user_input_norm in stock_norm_to_art:
+            inventory_arts.add(stock_norm_to_art[user_input_norm])
+    else:
+        # Частичный поиск
+        for norm_art, orig_art in stock_norm_to_art.items():
+            if user_input_norm in norm_art:
+                inventory_arts.add(orig_art)
+
     # ------------------ ФОРМИРОВАНИЕ ОТВЕТА ------------------
     answer_lines = []
 
@@ -340,6 +352,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for num in sorted(flp_nums):
         answer_lines.append(f"• FLP номер: {num}")
 
+    # Inventory артикулы, которые не были показаны выше
+    # Соберём все уже показанные артикулы
+    shown_arts = set(main_arts) | set(jrone_arts) | set(oem_arts) | set(flp_arts)
+    for art in sorted(inventory_arts):
+        if art not in shown_arts:
+            answer_lines.append(format_art_with_stock(art))
+
     # Если ничего не найдено
     if not answer_lines:
         answer_lines.append(f"❌ Ничего не найдено по запросу `{user_input}`.")
@@ -351,7 +370,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) с контролем доступа запущен...")
+    print("🚀 Четвёртый бот (поиск + наличие на складе) с двунаправленным поиском по inventory запущен...")
     if ALLOWED_IDS_STR:
         print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
     else:
@@ -360,3 +379,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+```
