@@ -185,28 +185,31 @@ stock_norm_to_art = {}
 
 try:
     with open(INVENTORY_FILE, mode='r', encoding='utf-8-sig') as file:
-        sample = file.read(1024)
-        file.seek(0)
-        sniffer = csv.Sniffer()
-        delimiter = sniffer.sniff(sample).delimiter
-        print(f"🔍 Определён разделитель для inventory.csv: '{delimiter}'")
-        reader = csv.reader(file, delimiter=delimiter)
+        reader = csv.reader(file, delimiter=';')
         for row in reader:
-            if len(row) >= 4:
-                art = clean_text(row[0])
-                dop = clean_text(row[1])
-                try:
-                    qty = int(clean_text(row[2]))
-                except ValueError:
-                    qty = 0
-                price_str = clean_text(row[3])
-                discount = True
-                if len(row) >= 5 and clean_text(row[4]) == "1":
-                    discount = False
-                if art:
-                    inventory[art] = [dop, qty, price_str, discount]
-                    stock_norm_to_art[normalize(art)] = art
+            # Пропускаем строки, где меньше 4 полей (без количества или цены)
+            if len(row) < 4:
+                continue
+            art = clean_text(row[0])
+            # Доп. артикул может быть пустым
+            dop = clean_text(row[1]) if len(row) > 1 else ''
+            # Количество – целое число
+            try:
+                qty = int(clean_text(row[2]))
+            except ValueError:
+                qty = 0
+            # Цена – строка, может содержать пробелы и запятую
+            price_str = clean_text(row[3])
+            # Флаг скидки: если 5-я колонка есть и равна "1", то скидки нет
+            discount = True
+            if len(row) >= 5 and clean_text(row[4]) == "1":
+                discount = False
+            if art:
+                inventory[art] = [dop, qty, price_str, discount]
+                stock_norm_to_art[normalize(art)] = art
     print(f"✅ Складская база: {len(inventory)} записей.")
+    # Для отладки выведем первые 5 артикулов
+    print("Примеры артикулов из inventory:", list(inventory.keys())[:5])
 except FileNotFoundError:
     print("⚠️ Файл inventory.csv не найден, информация о наличии будет недоступна.")
 except Exception as e:
