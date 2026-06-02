@@ -36,18 +36,18 @@ INVENTORY_FILE = 'vz.csv'
 
 WAREHOUSES = [
     {
-        'code': 'С1',
-        'name': os.environ.get('WAREHOUSE_1_NAME') or 'Склад 1',
+        'code': 'vz',
+        'name': os.environ.get('WAREHOUSE_1_NAME') or 'Вязовский',
         'file': os.environ.get('WAREHOUSE_1_FILE') or INVENTORY_FILE,
     },
     {
-        'code': 'С2',
-        'name': os.environ.get('WAREHOUSE_2_NAME') or 'Склад 2',
+        'code': 'gar',
+        'name': os.environ.get('WAREHOUSE_2_NAME') or 'Гаражная',
         'file': os.environ.get('WAREHOUSE_2_FILE') or 'gar.csv',
     },
     {
-        'code': 'С3',
-        'name': os.environ.get('WAREHOUSE_3_NAME') or 'Склад 3',
+        'code': 'per',
+        'name': os.environ.get('WAREHOUSE_3_NAME') or 'Перовская',
         'file': os.environ.get('WAREHOUSE_3_FILE') or 'per.csv',
     },
 ]
@@ -304,12 +304,12 @@ def get_stock_for_art(warehouse, art):
 def format_stock_for_warehouse(warehouse, art, margin):
     stock = get_stock_for_art(warehouse, art)
     if not stock:
-        return f"{warehouse['code']}: нет"
+        return f"{warehouse['name']}: нет"
 
     price_value = get_price_with_margin(stock['price'], margin)
     price_display = format_price(price_value) if price_value is not None else "цена ?"
     discount_str = " (скидка)" if stock['discount'] else ""
-    return f"{warehouse['code']}: {stock['qty']} ед., {price_display}{discount_str}"
+    return f"{warehouse['name']}: {stock['qty']} ед., {price_display}{discount_str}"
 
 def get_art_stock_sort_key(art, margin=DEFAULT_MARGIN):
     stocks = [get_stock_for_art(warehouse, art) for warehouse in loaded_warehouses]
@@ -355,7 +355,7 @@ def get_margin_keyboard():
 
 def get_warehouse_codes_text():
     warehouses = loaded_warehouses or WAREHOUSES
-    return ", ".join(f"{warehouse['code']} ({warehouse['name']})" for warehouse in warehouses)
+    return ", ".join(warehouse['name'] for warehouse in warehouses)
 
 # ---------- Функция безопасной отправки длинных сообщений ----------
 async def safe_send(update: Update, text: str, reply_markup=None, parse_mode=None, max_len=4000):
