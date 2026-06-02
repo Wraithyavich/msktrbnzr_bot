@@ -32,7 +32,25 @@ DATA_FILE = 'data.csv'
 JRONE_FILE = 'jronecross.csv'
 OEM_FILE = 'oemcross.csv'
 FLP_FILE = 'flp.csv'
-INVENTORY_FILE = 'inventory.csv'
+INVENTORY_FILE = 'vz.csv'
+
+WAREHOUSES = [
+    {
+        'code': 'С1',
+        'name': os.environ.get('WAREHOUSE_1_NAME') or 'Склад 1',
+        'file': os.environ.get('WAREHOUSE_1_FILE') or INVENTORY_FILE,
+    },
+    {
+        'code': 'С2',
+        'name': os.environ.get('WAREHOUSE_2_NAME') or 'Склад 2',
+        'file': os.environ.get('WAREHOUSE_2_FILE') or 'gar.csv',
+    },
+    {
+        'code': 'С3',
+        'name': os.environ.get('WAREHOUSE_3_NAME') or 'Склад 3',
+        'file': os.environ.get('WAREHOUSE_3_FILE') or 'per.csv',
+    },
+]
 
 MARGIN_OPTIONS = [20, 25, 30, 35, 40, 45, 50]
 DEFAULT_MARGIN = 50
@@ -179,41 +197,71 @@ except Exception as e:
 
 print(f"✅ FLP-база: {len(flp_norm_to_art)} уникальных FLP-номеров, {len(art_norm_to_flp)} уникальных артикулов.")
 
-# ---------- Загрузка складской базы (inventory.csv) ----------
-inventory = {}
-stock_norm_to_art = {}
+# ---------- Загрузка складских баз ----------
+loaded_warehouses = []
+warehouse_inventories = {}
+warehouse_norm_to_arts = {}
+stock_norm_to_arts = defaultdict(set)
 
-try:
-    with open(INVENTORY_FILE, mode='r', encoding='utf-8-sig') as file:
-        reader = csv.reader(file, delimiter=';')
-        for row in reader:
-            # Пропускаем строки, где меньше 4 полей (без количества или цены)
-            if len(row) < 4:
-                continue
-            art = clean_text(row[0])
-            # Доп. артикул может быть пустым
-            dop = clean_text(row[1]) if len(row) > 1 else ''
-            # Количество – целое число
-            try:
-                qty = int(clean_text(row[2]))
-            except ValueError:
-                qty = 0
-            # Цена – строка, может содержать пробелы и запятую
-            price_str = clean_text(row[3])
-            # Флаг скидки: если 5-я колонка есть и равна "1", то скидки нет
-            discount = True
-            if len(row) >= 5 and clean_text(row[4]) == "1":
-                discount = False
-            if art:
-                inventory[art] = [dop, qty, price_str, discount]
-                stock_norm_to_art[normalize(art)] = art
-    print(f"✅ Складская база: {len(inventory)} записей.")
-    # Для отладки выведем первые 5 артикулов
-    print("Примеры артикулов из inventory:", list(inventory.keys())[:5])
-except FileNotFoundError:
-    print("⚠️ Файл inventory.csv не найден, информация о наличии будет недоступна.")
-except Exception as e:
-    print(f"❌ Ошибка загрузки {INVENTORY_FILE}: {e}")
+def add_stock_index(warehouse_code, raw_value, art):
+    norm_value = normalize(raw_value)
+    if not norm_value:
+        return
+    stock_norm_to_arts[norm_value].add(art)
+    warehouse_norm_to_arts[warehouse_code][norm_value].add(art)
+
+def load_inventory_file(warehouse):
+    warehouse_code = warehouse['code']
+    file_name = warehouse['file']
+    inventory_data = {}
+    warehouse_norm_to_arts[warehouse_code] = defaultdict(set)
+
+    try:
+        with open(file_name, mode='r', encoding='utf-8-sig') as file:
+            reader = csv.reader(file, delimiter=';')
+            for row in reader:
+                # Формат: артикул;доп. артикул;количество;цена;флаг скидки
+                if len(row) < 4:
+                    continue
+                art = clean_text(row[0])
+                if not art:
+                    continue
+                dop = clean_text(row[1]) if len(row) > 1 else ''
+                try:
+                    qty = int(clean_text(row[2]))
+                except ValueError:
+                    qty = 0
+                price_str = clean_text(row[3])
+                discount = True
+                if len(row) >= 5 and clean_text(row[4]) == "1":
+                    discount = False
+
+                inventory_data[art] = {
+                    'dop': dop,
+                    'qty': qty,
+                    'price': price_str,
+                    'discount': discount,
+                }
+                add_stock_index(warehouse_code, art, art)
+                if dop:
+                    add_stock_index(warehouse_code, dop, art)
+    except FileNotFoundError:
+        print(f"⚠️ Файл склада {warehouse_code} ({file_name}) не найден, склад пропущен.")
+        return
+    except Exception as e:
+        print(f"❌ Ошибка загрузки склада {warehouse_code} ({file_name}): {e}")
+        return
+
+    warehouse_inventories[warehouse_code] = inventory_data
+    loaded_warehouses.append(warehouse)
+    print(f"✅ {warehouse_code} ({warehouse['name']}): {len(inventory_data)} записей из {file_name}.")
+    print(f"Примеры артикулов {warehouse_code}:", list(inventory_data.keys())[:5])
+
+for warehouse in WAREHOUSES:
+    load_inventory_file(warehouse)
+
+if not loaded_warehouses:
+    print("⚠️ Складские файлы не загружены, информация о наличии будет недоступна.")
 
 # ---------- Частичный поиск в основной базе ----------
 def partial_search_main(search_norm):
@@ -230,26 +278,66 @@ def partial_search_main(search_norm):
                     results.add(val)
     return results
 
-# ---------- Форматирование артикула с учётом наценки ----------
-def format_art_with_stock(art, links=None, margin=DEFAULT_MARGIN):
-    stock = inventory.get(art)
+# ---------- Форматирование артикула с учётом складов и наценки ----------
+def get_price_with_margin(price_str, margin):
+    original_price = parse_price(price_str)
+    if original_price == 0:
+        return None
+    base_price = original_price / 1.5
+    return base_price * (1 + margin / 100.0)
+
+def get_stock_for_art(warehouse, art):
+    warehouse_code = warehouse['code']
+    inventory_data = warehouse_inventories.get(warehouse_code, {})
+    stock = inventory_data.get(art)
     if stock:
-        _, qty, price_str, discount = stock
-        original_price = parse_price(price_str)
-        if original_price != 0:
-            base_price = original_price / 1.5
-            final_price = base_price * (1 + margin / 100.0)
-            price_display = format_price(final_price)
-        else:
-            price_display = price_str
-        discount_str = " (скидка)" if discount else ""
-        stock_part = f" – наличие: {qty} ед., цена: {price_display}{discount_str}"
+        return stock
+
+    norm_art = normalize(art)
+    candidates = warehouse_norm_to_arts.get(warehouse_code, {}).get(norm_art, set())
+    for candidate in sorted(candidates):
+        stock = inventory_data.get(candidate)
+        if stock:
+            return stock
+    return None
+
+def format_stock_for_warehouse(warehouse, art, margin):
+    stock = get_stock_for_art(warehouse, art)
+    if not stock:
+        return f"{warehouse['code']}: нет"
+
+    price_value = get_price_with_margin(stock['price'], margin)
+    price_display = format_price(price_value) if price_value is not None else "цена ?"
+    discount_str = " (скидка)" if stock['discount'] else ""
+    return f"{warehouse['code']}: {stock['qty']} ед., {price_display}{discount_str}"
+
+def get_art_stock_sort_key(art, margin=DEFAULT_MARGIN):
+    stocks = [get_stock_for_art(warehouse, art) for warehouse in loaded_warehouses]
+    has_positive_qty = any(stock and stock['qty'] > 0 for stock in stocks)
+    has_any_stock = any(stock is not None for stock in stocks)
+    price_values = []
+    for stock in stocks:
+        if not stock:
+            continue
+        price_value = get_price_with_margin(stock['price'], margin)
+        if price_value is not None:
+            price_values.append(price_value)
+    best_price = min(price_values) if price_values else float('inf')
+    availability_rank = 0 if has_positive_qty else 1 if has_any_stock else 2
+    return (availability_rank, best_price, normalize(art))
+
+def format_art_with_stock(art, links=None, margin=DEFAULT_MARGIN, label=None):
+    display_art = label or art
+    if loaded_warehouses:
+        stock_part = " | ".join(
+            format_stock_for_warehouse(warehouse, art, margin)
+            for warehouse in loaded_warehouses
+        )
     else:
-        stock_part = " – нет на складе (цена неизвестна)"
-    if links:
-        return f"• {art}{stock_part} → {', '.join(links)}"
-    else:
-        return f"• {art}{stock_part}"
+        stock_part = "склады не загружены"
+
+    links_part = f" → {', '.join(links)}" if links else ""
+    return f"• {display_art} — {stock_part}{links_part}"
 
 # ---------- Клавиатура выбора наценки ----------
 def get_margin_keyboard():
@@ -264,6 +352,10 @@ def get_margin_keyboard():
         buttons.append(row)
     buttons.append([KeyboardButton("Текущая наценка")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def get_warehouse_codes_text():
+    warehouses = loaded_warehouses or WAREHOUSES
+    return ", ".join(f"{warehouse['code']} ({warehouse['name']})" for warehouse in warehouses)
 
 # ---------- Функция безопасной отправки длинных сообщений ----------
 async def safe_send(update: Update, text: str, reply_markup=None, parse_mode=None, max_len=4000):
@@ -313,18 +405,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['margin'] = DEFAULT_MARGIN
 
-    emoji_id = "5247029251940586192"
     welcome_text = (
-        f"<tg-emoji emoji-id=\"{emoji_id}\">😊</tg-emoji> Бот поиска с проверкой наличия!\n"
-        "Введите E&E P/N, Turbo P/N, JRN-номер, OEM-номер или FLP-номер\n\n"
-        "Пример: CT-VNT11B или 17201-52010\n\n"
-        f"🔍 Можно искать по части номера (минимум {MIN_SEARCH_LENGTH} символа).\n"
-        "Дефисы можно не ставить – бот поймёт.\n"
-        "Также бот понимает русские буквы, похожие на латинские.\n"
-        "Для найденных артикулов показывается наличие на складе.\n"
-        "Используйте кнопки ниже для выбора наценки."
+        "🔎 Поиск запчастей по складам\n\n"
+        "Введите E&E / Turbo / JRN / OEM / FLP номер.\n"
+        f"Можно часть номера от {MIN_SEARCH_LENGTH} символов; дефисы не важны.\n\n"
+        "Пример: CT-VNT11B или 17201-52010\n"
+        f"Склады: {get_warehouse_codes_text()}\n"
+        f"Наценка сейчас: {DEFAULT_MARGIN}%"
     )
-    await safe_send(update, welcome_text, reply_markup=get_margin_keyboard(), parse_mode='HTML')
+    await safe_send(update, welcome_text, reply_markup=get_margin_keyboard())
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -418,24 +507,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_input_norm in norm_key:
                 flp_nums.update(nums)
 
-    # Inventory
+    # Склады
     if input_len < MIN_SEARCH_LENGTH:
-        if user_input_norm in stock_norm_to_art:
-            inventory_arts.add(stock_norm_to_art[user_input_norm])
-        elif user_input in inventory:
-            inventory_arts.add(user_input)
+        inventory_arts.update(stock_norm_to_arts.get(user_input_norm, set()))
     else:
-        for norm_art, orig_art in stock_norm_to_art.items():
+        for norm_art, arts in stock_norm_to_arts.items():
             if user_input_norm in norm_art:
-                inventory_arts.add(orig_art)
+                inventory_arts.update(arts)
 
     # Формирование строк ответа
     answer_lines = []
 
-    for art in sorted(main_arts):
+    for art in sorted(main_arts, key=lambda item: get_art_stock_sort_key(item, margin)):
         answer_lines.append(format_art_with_stock(art, margin=margin))
 
-    for art in sorted(jrone_arts):
+    for art in sorted(jrone_arts, key=lambda item: get_art_stock_sort_key(item, margin)):
         links = set()
         if art in dict_by_col1:
             links.update(dict_by_col1[art])
@@ -443,25 +529,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             links.update(dict_by_col2[art])
         answer_lines.append(format_art_with_stock(art, links=sorted(links), margin=margin))
 
-    for art in sorted(oem_arts):
+    for art in sorted(oem_arts, key=lambda item: get_art_stock_sort_key(item, margin)):
         answer_lines.append(format_art_with_stock(art, margin=margin))
 
-    for art in sorted(flp_arts):
-        answer_lines.append(f"• FLP артикул: " + format_art_with_stock(art, margin=margin)[2:])
+    for art in sorted(flp_arts, key=lambda item: get_art_stock_sort_key(item, margin)):
+        answer_lines.append(format_art_with_stock(art, margin=margin, label=f"FLP {art}"))
 
     for num in sorted(flp_nums):
         answer_lines.append(f"• FLP номер: {num}")
 
     shown_arts = set(main_arts) | set(jrone_arts) | set(oem_arts) | set(flp_arts)
-    for art in sorted(inventory_arts):
+    for art in sorted(inventory_arts, key=lambda item: get_art_stock_sort_key(item, margin)):
         if art not in shown_arts:
             answer_lines.append(format_art_with_stock(art, margin=margin))
 
     if not answer_lines:
-        await safe_send(update, f"❌ Ничего не найдено по запросу `{user_input}`.", reply_markup=get_margin_keyboard())
+        await safe_send(update, f"❌ Ничего не найдено по запросу: {user_input}", reply_markup=get_margin_keyboard())
         return
 
-    full_text = "\n".join(answer_lines)
+    full_text = f"🔎 Найдено: {len(answer_lines)} • наценка {margin}%\n" + "\n".join(answer_lines)
     await safe_send(update, full_text, reply_markup=get_margin_keyboard())
 
 def main():
@@ -469,7 +555,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚀 Четвёртый бот (поиск + наличие на складе) с регулировкой наценки и безопасной отправкой запущен...")
+    print("🚀 Бот поиска запчастей по складам с регулировкой наценки запущен...")
     if ALLOWED_IDS_STR:
         print(f"🔒 Доступ разрешён для {len(ALLOWED_IDS)} пользователей.")
     else:
