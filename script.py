@@ -301,15 +301,37 @@ def get_stock_for_art(warehouse, art):
             return stock
     return None
 
-def format_stock_for_warehouse(warehouse, art, margin):
-    stock = get_stock_for_art(warehouse, art)
+def get_art_stocks(art):
+    return [
+        (warehouse, get_stock_for_art(warehouse, art))
+        for warehouse in loaded_warehouses
+    ]
+
+def get_art_price_text(stocks, margin):
+    prices = []
+    discount = False
+    for _, stock in stocks:
+        if not stock:
+            continue
+        price_value = get_price_with_margin(stock['price'], margin)
+        if price_value is not None:
+            prices.append(price_value)
+        if stock['discount']:
+            discount = True
+
+    if not prices:
+        return ""
+
+    price_text = f"цена: {format_price(min(prices))}"
+    if discount:
+        price_text += " (скидка)"
+    return price_text
+
+def format_stock_for_warehouse(warehouse, stock):
     if not stock:
         return f"{warehouse['name']}: нет"
 
-    price_value = get_price_with_margin(stock['price'], margin)
-    price_display = format_price(price_value) if price_value is not None else "цена ?"
-    discount_str = " (скидка)" if stock['discount'] else ""
-    return f"{warehouse['name']}: {stock['qty']} ед., {price_display}{discount_str}"
+    return f"{warehouse['name']}: {stock['qty']}"
 
 def get_art_stock_sort_key(art, margin=DEFAULT_MARGIN):
     stocks = [get_stock_for_art(warehouse, art) for warehouse in loaded_warehouses]
@@ -329,10 +351,16 @@ def get_art_stock_sort_key(art, margin=DEFAULT_MARGIN):
 def format_art_with_stock(art, links=None, margin=DEFAULT_MARGIN, label=None):
     display_art = label or art
     if loaded_warehouses:
-        stock_part = " | ".join(
-            format_stock_for_warehouse(warehouse, art, margin)
-            for warehouse in loaded_warehouses
-        )
+        stocks = get_art_stocks(art)
+        if any(stock for _, stock in stocks):
+            price_part = get_art_price_text(stocks, margin)
+            qty_part = "; ".join(
+                format_stock_for_warehouse(warehouse, stock)
+                for warehouse, stock in stocks
+            )
+            stock_part = f"{price_part} | {qty_part}" if price_part else qty_part
+        else:
+            stock_part = "отсутствует"
     else:
         stock_part = "склады не загружены"
 
