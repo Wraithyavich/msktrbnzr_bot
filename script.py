@@ -53,7 +53,7 @@ WAREHOUSES = [
 ]
 
 MARGIN_OPTIONS = [20, 25, 30, 35, 40, 45, 50]
-DEFAULT_MARGIN = 50
+DEFAULT_MARGIN = 40
 
 # ---------- Очистка текста ----------
 def clean_text(s):
